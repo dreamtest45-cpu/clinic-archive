@@ -2,7 +2,6 @@ require('dotenv').config();
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
-const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
 const multer = require('multer');
 const { pool, migrate } = require('./db');
@@ -11,26 +10,6 @@ const { issueToken, verifyToken, tooManyAttempts, recordFailure, clearFailures }
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1); // Railway sits behind a proxy; needed for correct req.ip and secure cookies
-
-// Security headers (nosniff, no framing by other sites, no powered-by, etc).
-// The whole app UI is one inline <script>, so script-src needs 'unsafe-inline'
-// — this still buys real protection (clickjacking, MIME-sniffing, referrer
-// leakage) without requiring a rewrite of the front-end.
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
-      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-      fontSrc: ["'self'", 'https://fonts.gstatic.com'],
-      imgSrc: ["'self'", 'data:', 'blob:'],
-      connectSrc: ["'self'"],
-      frameAncestors: ["'self'"],
-      objectSrc: ["'none'"],
-      baseUri: ["'self'"],
-    },
-  },
-}));
 
 const PORT = process.env.PORT || 3000;
 const COOKIE_NAME = 'clinic_session';
@@ -111,19 +90,6 @@ function contentDisposition(type, filename) {
   let ascii = safe.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, "'");
   if (!ascii.trim()) ascii = 'file';
   return `${type}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(safe)}`;
-}
-// The upload's declared MIME type comes from the browser/client and can be
-// forged (e.g. a script uploaded while claiming "image/png"). Checking the
-// file's actual magic bytes catches that before it's ever stored, on top of
-// the fileFilter's mimetype check.
-function sniffMime(buf) {
-  if (!buf || buf.length < 4) return null;
-  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
-  if (buf.length >= 8 && buf.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
-  if (buf.slice(0, 4).toString('ascii') === 'GIF8') return 'image/gif';
-  if (buf.length >= 12 && buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
-  if (buf.slice(0, 5).toString('ascii') === '%PDF-') return 'application/pdf';
-  return null;
 }
 
 // ---------- auth routes ----------
@@ -410,10 +376,6 @@ app.post('/api/patients/:id/attachments', (req, res) => {
       return bad(res, msg);
     }
     if (!req.file) return bad(res, 'لم يتم اختيار ملف');
-    const sniffed = sniffMime(req.file.buffer);
-    if (!sniffed || !ALLOWED_MIME.test(sniffed)) {
-      return bad(res, 'محتوى الملف لا يطابق نوعه المُعلن — تأكد أنه صورة أو PDF فعلاً');
-    }
     try {
       const patient = await pool.query(`SELECT id FROM patients WHERE id=$1`, [req.params.id]);
       if (!patient.rows[0]) return notFound(res);
@@ -428,7 +390,7 @@ app.post('/api/patients/:id/attachments', (req, res) => {
         `INSERT INTO attachments (id, patient_id, filename, mime, data, size, note)
          VALUES ($1,$2,$3,$4,$5,$6,$7)
          RETURNING id, patient_id, filename, mime, size, note, uploaded_at`,
-        [id, req.params.id, filename, sniffed, req.file.buffer, req.file.size, note]
+        [id, req.params.id, filename, req.file.mimetype, req.file.buffer, req.file.size, note]
       );
       res.status(201).json(rows[0]);
     } catch (e) { serverError(res, e); }
