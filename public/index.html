@@ -268,6 +268,7 @@
   var selectedApptDay = todayStr();
   var apptFormOpen = false; // false | true (new) | {...appointment} (editing)
   var apptConfirmDeleteId = null;
+  var clinicDisplayName = 'أرشيف المرضى'; // set from /api/me in checkSession()
 
   var patientListEl = document.getElementById('patientList');
   var detailPanelEl = document.getElementById('detailPanel');
@@ -350,6 +351,36 @@
     setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
   }
 
+  // ---------- WHATSAPP REMINDERS (manual, wa.me deep link — no API/account needed) ----------
+  // Returns digits-only, international format (no "+", no leading zero) for
+  // wa.me, or null if we can't tell what the number is.
+  //  - Already international ("+9627...", "00962...") -> keep the country code, strip symbols.
+  //  - Local Jordanian mobile (07XXXXXXXX) -> assume +962 and drop the leading 0.
+  //  - Anything else (foreign patients registered with their own intl. number,
+  //    or an unrecognized format) -> best-effort digits, no guessing at a country code.
+  function waPhoneDigits(phone){
+    if(!phone) return null;
+    var raw = String(phone).trim();
+    var digits = raw.replace(/\D/g, '');
+    if(!digits) return null;
+    if(raw.indexOf('+') === 0) return digits;
+    if(digits.indexOf('00') === 0) return digits.slice(2);
+    if(/^07\d{8}$/.test(digits)) return '962' + digits.slice(1);
+    return digits;
+  }
+  function apptReminderMessage(a){
+    var name = a.patient_name || 'عزيزي المريض';
+    var when = fmtDate(a.date) + (a.time ? (' الساعة ' + a.time) : '');
+    var doctorPart = a.doctor ? (' مع د. ' + a.doctor) : '';
+    var clinicPart = clinicDisplayName ? (' في ' + clinicDisplayName) : '';
+    return 'مرحباً ' + name + '،\nتذكير بموعدك يوم ' + when + doctorPart + clinicPart + '.\nبانتظارك 🌿';
+  }
+  function waReminderLink(a){
+    var digits = waPhoneDigits(a.phone);
+    if(!digits) return null;
+    return 'https://wa.me/' + digits + '?text=' + encodeURIComponent(apptReminderMessage(a));
+  }
+
   // ---------- API ----------
   function api(method, url, body){
     var opts = { method: method, headers: {}, credentials: 'same-origin' };
@@ -386,6 +417,7 @@
   function checkSession(){
     fetch('/api/me', {credentials:'same-origin'}).then(function(r){ return r.json(); }).then(function(d){
       var name = d.clinicName || 'أرشيف المرضى';
+      clinicDisplayName = name;
       document.getElementById('loginClinicName').textContent = name;
       document.getElementById('clinicNameHeading').textContent = name;
       document.title = name;
@@ -803,6 +835,7 @@
     var confirmingThis = apptConfirmDeleteId === a.id;
     var isDone = a.status === 'done', isBad = a.status==='cancelled' || a.status==='no_show';
     var badgeStyle = isDone ? 'background:var(--success-tint);color:var(--success);' : isBad ? 'background:var(--danger-tint);color:var(--danger);' : '';
+    var waLink = waReminderLink(a);
     return '<div class="visit-card">' +
       '<div class="visit-top"><span class="visit-date">'+esc(a.time||'')+' — '+esc(a.patient_name||'بدون اسم')+'</span>' +
         '<span class="badge" style="'+badgeStyle+(badgeStyle?'':'background:var(--surface-2);color:var(--ink-muted);')+'">'+(APPT_STATUS_LABELS[a.status]||a.status)+'</span></div>' +
@@ -813,6 +846,7 @@
         (a.notes?'<div><span class="field-label">ملاحظات: </span>'+esc(a.notes)+'</div>':'') +
       '</div>' +
       '<div class="row-actions no-print" style="flex-wrap:wrap;">' +
+        (waLink ? '<a class="link-btn" href="'+esc(waLink)+'" target="_blank" rel="noopener">💬 تذكير واتساب</a>' : '') +
         (a.patient_id ? '<button class="link-btn" data-action="appt-goto-patient" data-id="'+a.patient_id+'">فتح ملف المريض</button>' : '') +
         (a.status!=='done' ? '<button class="link-btn" data-action="appt-mark" data-id="'+a.id+'" data-status="done">تحديد كمكتمل</button>' : '') +
         (a.status!=='cancelled' ? '<button class="link-btn" data-action="appt-mark" data-id="'+a.id+'" data-status="cancelled" style="color:var(--danger);">إلغاء الموعد</button>' : '') +
